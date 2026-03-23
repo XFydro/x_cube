@@ -66,7 +66,7 @@ Installers:
 
 @@@@@@@@@@@@@@@@@@@@@@@@@@@@
 
-# <img src="https://x3documentation.neocities.org/logo2.png" width="60" />X3 SR (Sardonix)
+# <img src="https://raw.githubusercontent.com/XFydro/x3/refs/heads/main/assets/sardonix.png" width="60" />X3 SR (Sardonix)
 
 > *"Lightweight as a feather, dumb as a rock"*
 ### (NO LONGER MAINTAINED!)
