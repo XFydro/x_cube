@@ -14,7 +14,7 @@ from difflib import SequenceMatcher
 import datetime, platform, uuid, getpass, socket, traceback, builtins, argparse, time, re, os, shlex, json, difflib, subprocess, importlib, random, math, struct
 #import cProfile
 REPL=0 #on default script mode.
-VERSION=3.95 #version (For IDE and more)
+VERSION=3.959 #version (For IDE and more)
 
 def install_package(package, alias=None)->None:
     import sys
@@ -35,13 +35,22 @@ def install_package(package, alias=None)->None:
         print(f"Imported {package} as {alias}.")
     else:
         globals()[package] = module
-install_package("psutil")
-install_package("requests")
+try:
+    import psutil
+except ImportError:
+    install_package("psutil")
+try:
+    import requests
+except ImportError:
+    install_package("requests")
+
+
 try:
     class Error(Exception):
         pass
     class Interpreter:
         def __init__(self): 
+            self.call_stack = []
             self.local_variables = {}
             self.REPL:int=REPL
             self.current_line:int=-1
@@ -49,6 +58,7 @@ try:
             self.functions:dict = {} #function dictionary
             self.current_function_name:str = None
             self.in_function_definition:bool = False #flag to indicate if the code is currently in a function definition
+            self.CFE:bool = False #Current Function Execution.
             self.local:bool = False #local variable flag, used to indicate if a var is being declared locally or globally
             self.control_stack:list = [] #that if else and stuff, for basic control flow monitoring
             self.debug:bool = False #only used as a placeholder, replaced by the new BETTER debug system
@@ -179,9 +189,15 @@ try:
                 "##fetch:content": lambda url="": requests.get(url).content if 'requests' in globals() else (_ for _ in ()).throw(Error("--ErrID102: Fetch not available")),
                 "##fetch:html": lambda url="": requests.get(url).text if 'requests' in globals() else (_ for _ in ()).throw(Error("--ErrID102: Fetch not available")),
                 "##fetch:xml": lambda url="": requests.get(url).text if 'requests' in globals() else (_ for _ in ()).throw(Error("--ErrID102: Fetch not available")),
-                
-                "##rgb": lambda hex="#000000": tuple(int(hex.strip("#")[i:i+2], 16) for i in (0, 2, 4)),
-
+                "##rgb:channel": lambda s="000000 0": (
+                    lambda parts: (
+                        lambda hex_str, ch: int(hex_str[ch*2:ch*2+2], 16)
+                    )(
+                        (parts[0].strip('"').lstrip("#") + "000000")[:6],
+                        max(0, min(2, int(parts[1])))
+                    )
+                    if len(parts) >= 2 else 0
+                )(s.split()),
                 "##readfile": lambda path="": open(path, "r").read() if os.path.exists(path) else "[File not found]",#returns entire file content as an single string
 
 
@@ -463,9 +479,10 @@ try:
 
         def replace_variables(self, text, quoted=None):
             if not self.should_execute():
-                return text  # Skip replacement if not executing
+                return text
+
             text = self.list_replacer(text)
-            text = self.replace_nibbits(text)
+
             if self.vardebug:
                 print(f"[DEBUG] Replacing variables in: {text}")
 
@@ -474,36 +491,33 @@ try:
                 if ":" in raw:
                     func_name, arg_str = raw.split(":", 1)
                     arg_str = arg_str.strip("()")
-                    result = self.cmd_call(f"{func_name} {arg_str}")
+                    resolved_args = self.replace_variables(arg_str)
+                    result = self.cmd_call(f"{func_name} {resolved_args}")
                     return str(result) if result is not None else ""
                 return f"<INVALID:{raw}>"
-            try:
-                text = re.sub(r"##([\w]+:\([^\)]*\))", func_replacer, text)
-                if self.vardebug:
-                    print(f"[DEBUG] After function replacement: {text}")
-            except Exception as e:
-                self.loaderrorcount+=1;self.raiseError(f"--ErrID105: Function call replacement error in '{text}'. Details: {e}")if getattr(self, "trystate")=="False" else print(f"[WARNING] Function call replacement error in '{text}'. Details: {e}, ignored due to try block.")
 
             def var_replacer(match):
                 var_name = match.group(1)
+
                 if var_name in self.local_variables:
-                    return str(self.local_variables[var_name][0])
+                    val = self.local_variables[var_name][0]
                 elif var_name in self.variables:
                     val = self.variables[var_name][0]
-                    if isinstance(val, str):
-                        if quoted:
-                            return f'"{val}"'
-                        else:
-                            return val
-                    return str(val)
-
                 else:
-                    self.loaderrorcount+=1;self.raiseError(f"--ErrID94: Variable '{var_name}' not defined.")if getattr(self, "trystate")=="False" else print(f"[WARNING] Variable '{var_name}' not defined, replaced with empty string due to try block.")
+                    self.raiseError(f"--ErrID94: Variable '{var_name}' not defined.")
+                    return ""
+
+                return str(val)  # 🔥 ALWAYS raw
+
             if self.vardebug:
                 print(f"[DEBUG] Final variable replacement in: {text}")
 
-            return re.sub(r"\$([a-zA-Z_][a-zA-Z0-9_]*)", var_replacer, text)
+            # FIRST resolve variables
+            text = re.sub(r"\$([a-zA-Z_][a-zA-Z0-9_]*)", var_replacer, text)
 
+            # THEN run functions
+            text = re.sub(r"##([\w]+:\([^\)]*\))", func_replacer, text)
+            return self.replace_nibbits(text)
         def eval_condition(self, condition_str):
             condition_str = self.replace_variables(condition_str, quoted=True)  # Replace variables in the condition
             condition_str = self.replace_nibbits(condition_str)  # Replace nibbits in the condition
@@ -981,14 +995,20 @@ try:
 
 
         def store_variable(self, var_name, value, data_type, local=False):
-            target = self.local_variables if local else self.variables
+            if local:
+                target = self.local_variables
+            else:
+                target = self.variables
+            if value == "output":
+                value = self.output
+            if data_type == "str" and isinstance(value, str):
+                if (value.startswith('"') and value.endswith('"')) or \
+                (value.startswith("'") and value.endswith("'")):
+                    value = value[1:-1]
             if data_type == "list" and not isinstance(value, list):
                 value = [value]
-            if value != "output":
-                target[var_name] = (value, data_type)
-            else:
-                target[var_name] = (self.output, data_type)
 
+            target[var_name] = (value, data_type)
         def handle_command(self, command):
             """Processes commands, handles function definitions, and executes appropriately."""
             # Early return for empty lines or comments
@@ -996,7 +1016,7 @@ try:
                 self.loaderrorcount+=1;self.raiseError("--ErrID72: Script Execution Mode Only (SEMO) is enabled. Cannot run commands.")if getattr(self, "trystate")=="False" else print(f"[WARNING] Script Execution Mode Only (SEMO) is enabled. Cannot run commands, ignored due to try block.")
             if not command or command.startswith(("//", "\\")):
                 return
-            if "##" in command and not command.startswith("prt "):
+            if "##" in command and not command.startswith("prt ") and not self.in_function_definition:
                 command = self.replace_nibbits(command)
             if getattr(self, "in_function_definition", False):
                 if command.strip().lower() == "fncend":
@@ -1137,12 +1157,19 @@ try:
             for full_key, arg in matches:
                 func = self.nibbits.get(full_key)
                 arg_value = arg
-
                 if "$" in arg_value:
                     arg_value = self.replace_variables(arg_value)
+
                 try:
                     if callable(func):
-                        result = str(func(arg_value)) if arg_value.strip() else str(func())
+                        clean_arg = arg_value.strip()
+
+                        # remove wrapping quotes if present
+                        if (clean_arg.startswith('"') and clean_arg.endswith('"')) or \
+                        (clean_arg.startswith("'") and clean_arg.endswith("'")):
+                            clean_arg = clean_arg[1:-1]
+
+                        result = str(func(clean_arg)) if clean_arg else str(func())
                         if result is None:
                             result = "None"
                     else:
@@ -1521,7 +1548,14 @@ try:
             Syntax:
                 call function_name [args...]
             """
-
+            # SAVE current state
+            self.call_stack.append({
+                "variables": self.variables.copy(),
+                "local_variables": self.local_variables.copy(),
+                "local": self.local
+            })
+            self.local = True
+            self.local_variables = {}
             def depth_split(s: str):
                 parts = []
                 buf = ""
@@ -1602,8 +1636,11 @@ try:
                 result = self.return_value
                 self.return_flag = False
                 self.return_value = None
-                self.local_variables = {}
-                self.local = False
+                state = self.call_stack.pop()
+
+                self.variables = state["variables"]
+                self.local_variables = state["local_variables"]
+                self.local = state["local"]
                 return result
             except RecursionError:
                 self.loaderrorcount += 1
@@ -1706,108 +1743,162 @@ try:
             self.perform_arithmetic_operation(args, operation="inv_sqrt")
         def cmd_sqrt(self, args):
             """
-            Calculates the square root of a number.
-            Syntax: sqrt var_name
+            Calculates the square root.
+            Syntax: sqrt var_name value_or_variable
+            Example:
+                sqrt result 25
+                sqrt result $a
             """
             try:
-                var_name = args.strip()
-                if var_name in self.variables and isinstance(self.variables[var_name][0], (int, float)):
-                    value = self.variables[var_name][0]
-                    result = value ** 0.5
-                    self.store_variable(f"{var_name}_sqrt", result, "float")
-                    if self.mathdebug:
-                        print(f"[DEBUG] Square root of {value} stored in '{var_name}_sqrt'.")
+                parts = args.strip().split()
+
+                if len(parts) != 2:
+                    self.loaderrorcount += 1
+                    return self.raiseError("--ErrID66: sqrt requires exactly 2 arguments.") \
+                        if getattr(self, "trystate") == "False" \
+                        else print("[WARNING] sqrt requires exactly 2 arguments, ignored due to try block.")
+
+                out_name, value_token = parts
+
+                # helper: fetch variable (local first)
+                def get_var(name):
+                    if name in self.local_variables:
+                        return self.local_variables[name][0]
+                    elif name in self.variables:
+                        return self.variables[name][0]
+                    else:
+                        raise ValueError(f"Variable '{name}' not defined.")
+
+                # --- resolve value ---
+                if value_token.startswith("$"):
+                    value = get_var(value_token[1:])
                 else:
-                    self.loaderrorcount+=1;self.raiseError(f"--ErrID66: Variable '{var_name}' not defined or not numeric.")if getattr(self, "trystate")=="False" else print(f"[WARNING] Variable '{var_name}' not defined or not numeric, ignored due to try block.")
-                   
+                    try:
+                        value = float(value_token) if "." in value_token else int(value_token)
+                    except ValueError:
+                        raise ValueError(f"Invalid value '{value_token}'")
+
+                # --- validate ---
+                if not isinstance(value, (int, float)):
+                    raise ValueError("Value must be numeric.")
+
+                if value < 0:
+                    raise ValueError("Square root of negative number.")
+
+                # --- compute ---
+                result = value ** 0.5
+
+                # --- store ---
+                self.store_variable(out_name, result, "float")
+
+                if self.mathdebug:
+                    print(f"[DEBUG] SQRT: sqrt({value}) = {result} -> stored in '{out_name}'")
 
             except Exception as e:
-                self.raiseError(f"[Unrecognised Error] Failed to calculate square root. Error: {e}")if getattr(self, "trystate")=="False" else print(f"[WARNING] Unrecognised Error: Failed to calculate square root. Error: {e}, ignored due to try block.")
-                self.cmd_exit()
-
+                self.loaderrorcount += 1
+                self.raiseError(f"--ErrID66: Failed to calculate square root: {e}") \
+                    if getattr(self, "trystate") == "False" \
+                    else print(f"[WARNING] Failed to calculate square root: {e}, ignored due to try block.")
         def cmd_fastmath(self,a):
             """
             Syntax: fastmath var_name = expression
             """
             x,e=a.split('=',1);x=x.strip();e=e.strip();c=self._math_cache.get(e)or self._math_cache.setdefault(e,compile(e,'<fm>','eval'));r=eval(c,self._math_ns);self.variables[x]=[r,'float'if isinstance(r,float)else'int'];self._math_ns[x]=r
 
-
         def perform_arithmetic_operation(self, args, operation):
-            """
-            Handles arithmetic operations with variable and expression support.
-            Syntax: <var_name> <operand1> <operand2 or math expression>
-            Example:
-                add result $a 5
-                mul area $length * $width
-            """
             try:
                 args = shlex.split(args)
 
-                if len(args) < 3:
-                    raise ValueError(f"Syntax: {operation} <var_name> <operand1> <operand2 or expression>")
+                if len(args) < 2:
+                    raise ValueError(f"Syntax: {operation} <var_name> <operand(s)>")
 
-                var_name, op1_token = args[0], args[1]
-                op2_expr = " ".join(args[2:])  # Full math expression or raw operand
+                var_name = args[0]
+                op1_token = args[1]
+                op2_expr = " ".join(args[2:]) if len(args) > 2 else None
 
-                op1_key = op1_token.lstrip("$")
-                if op1_key in self.variables:
-                    operand1 = self.variables[op1_key][0]
+                # 🔥 VARIABLE FETCH (LOCAL FIRST)
+                def get_var(name):
+                    if name in self.local_variables:
+                        return self.local_variables[name][0]
+                    elif name in self.variables:
+                        return self.variables[name][0]
+                    else:
+                        raise ValueError(f"Variable '{name}' not defined.")
+
+                # 🔥 PARSE OPERAND 1
+                if op1_token.startswith("$"):
+                    operand1 = get_var(op1_token[1:])
                 else:
-                    try:
-                        operand1 = float(op1_token) if '.' in op1_token else int(op1_token)
-                    except ValueError:
-                        raise ValueError(f"Invalid operand1: '{op1_token}'")
+                    operand1 = float(op1_token) if '.' in op1_token else int(op1_token)
 
+                # 🔥 SUBSTITUTE ONLY $vars (NOT raw words)
                 def substitute_vars(expr):
                     def replace_var(match):
-                        varname = match.group(0).lstrip("$")
-                        if varname in self.variables:
-                            return str(self.variables[varname][0])
-                        else:
-                            raise ValueError(f"Variable '{varname}' not defined in expression.")
-                    return re.sub(r'\$?[a-zA-Z_]\w*', replace_var, expr)
+                        varname = match.group(1)
+                        return str(get_var(varname))
+                    return re.sub(r'\$([a-zA-Z_]\w*)', replace_var, expr)
 
-                op2_eval = substitute_vars(op2_expr)
-                if self.cmdhandlingdebug:
-                    print(f"[DEBUG] Evaluating op2: '{op2_expr}' -> '{op2_eval}'")
+                # 🔥 PARSE OPERAND 2 (if exists)
+                if op2_expr:
+                    op2_eval = substitute_vars(op2_expr)
 
-                try:
+                    if self.cmdhandlingdebug:
+                        print(f"[DEBUG] Evaluating op2: '{op2_expr}' -> '{op2_eval}'")
+
                     operand2 = eval(op2_eval, {"__builtins__": {}})
-                except Exception as e:
-                    raise ValueError(f"Failed to evaluate expression '{op2_expr}': {e}")
+                else:
+                    operand2 = None
 
-                # -- Convert both to int or float --
-                try:
-                    operand1 = float(operand1) if '.' in str(operand1) else int(operand1)
-                    operand2 = float(operand2) if '.' in str(operand2) else int(operand2)
-                except ValueError:
-                    raise TypeError("Operands must be numeric.")
-                operations = {
-                    
-                    "add": lambda x, y: x + y,
-                    "sub": lambda x, y: x - y,
-                    "mul": lambda x, y: x * y,
-                    "div": lambda x, y: x / y if y != 0 else (_ for _ in ()).throw(ZeroDivisionError("Division by zero")),
-                    "mod": lambda x, y: x % y if y != 0 else (_ for _ in ()).throw(ZeroDivisionError("Modulo by zero")),
-                    "pow": lambda x, y: x ** y,
-                    "sqrt": lambda x: x ** 0.5 if x >= 0 else (_ for _ in ()).throw(ValueError("Square root of negative number")),
-                    "inv_sqrt": lambda x: 1 / (x ** 0.5) if x > 0 else (_ for _ in ()).throw(ValueError("Inverse square root of non-positive number"))
+                # 🔥 FORCE NUMERIC
+                def to_number(x):
+                    return float(x) if isinstance(x, float) or '.' in str(x) else int(x)
 
-                }
+                operand1 = to_number(operand1)
+                if operand2 is not None:
+                    operand2 = to_number(operand2)
 
-                if operation not in operations:
+                # 🔥 OPERATIONS
+                if operation == "add":
+                    result = operand1 + operand2
+                elif operation == "sub":
+                    result = operand1 - operand2
+                elif operation == "mul":
+                    result = operand1 * operand2
+                elif operation == "div":
+                    if operand2 == 0:
+                        raise ZeroDivisionError("Division by zero")
+                    result = operand1 / operand2
+                elif operation == "mod":
+                    if operand2 == 0:
+                        raise ZeroDivisionError("Modulo by zero")
+                    result = operand1 % operand2
+                elif operation == "pow":
+                    result = operand1 ** operand2
+                elif operation == "sqrt":
+                    if operand1 < 0:
+                        raise ValueError("Square root of negative number")
+                    result = operand1 ** 0.5
+                elif operation == "inv_sqrt":
+                    if operand1 <= 0:
+                        raise ValueError("Inverse square root of non-positive number")
+                    result = 1 / (operand1 ** 0.5)
+                else:
                     raise ValueError(f"Unknown operation '{operation}'.")
-                result = operations[operation](operand1, operand2)
 
+                # 🔥 STORE RESULT (respect scope via store_variable)
                 result_type = "int" if isinstance(result, int) or result == int(result) else "float"
-                self.store_variable(var_name, int(result) if result_type == "int" else result, result_type, local=self.local)
+                self.store_variable(var_name, int(result) if result_type == "int" else result, result_type)
 
                 if self.mathdebug:
-                    print(f"[DEBUG] {operation.upper()}: {operand1} {operation} {operand2} = {result} (stored as {result_type} in '{var_name}')")
+                    if operand2 is not None:
+                        print(f"[DEBUG] {operation.upper()}: {operand1} {operation} {operand2} = {result}")
+                    else:
+                        print(f"[DEBUG] {operation.upper()}: {operation}({operand1}) = {result}")
 
             except Exception as e:
-                self.raiseError(f"[Unrecognised Error] {e}")if getattr(self, "trystate")=="False" else print(f"[WARNING] Unrecognised Error: {e}, ignored due to try block.")
-
+                self.raiseError(f"[Unrecognised Error] {e}") \
+                    if getattr(self, "trystate") == "False" \
+                    else print(f"[WARNING] Unrecognised Error: {e}, ignored due to try block.")
         def try_convert(self, value):
             try:
                 return float(value) if '.' in str(value) else int(value)
