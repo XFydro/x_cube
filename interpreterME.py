@@ -7,13 +7,12 @@ __Pip(Latest Update for better experience)
 __Internet Connection(for first run to download essentials like help files)
 __Minimal Hardware resources:2GB Ram
 __Patience because python is slow af :P
-__Essentials Folder in the same directory as run.py (will be created automatically on first run if not present)
 """
 from difflib import SequenceMatcher
 import datetime, platform, uuid, getpass, socket, traceback, builtins, argparse, time, re, os, shlex, json, difflib, subprocess, importlib, random, math, struct
 #import cProfile
 REPL=0 #on default script mode.
-VERSION=3.959 #version (For IDE and more)
+VERSION=3.96 #version (For IDE and more)
 
 def install_package(package, alias=None)->None:
     import sys
@@ -122,7 +121,6 @@ try:
                 'setclientrule': self.setclientrule,
                 'sqrt': self.cmd_sqrt,
                 'sub': self.cmd_sub,
-                 #'terminal': self.cmd_open_terminal,
                 'brute': self.cmd_brute,
                 'wait': self.cmd_wait,
                 'while': self.cmd_while,
@@ -197,6 +195,14 @@ try:
                     )
                     if len(parts) >= 2 else 0
                 )(s.split()),
+                "##rgb": lambda s="000000": (
+                    lambda hex_str: (
+                        int(hex_str[0:2], 16),
+                        int(hex_str[2:4], 16),
+                        int(hex_str[4:6], 16)
+                    ) if len(hex_str) >= 6 else (0, 0, 0)
+                )(s.strip('"').lstrip("#") + "000000"),
+
                 "##readfile": lambda path="": open(path, "r").read() if os.path.exists(path) else "[File not found]",#returns entire file content as an single string
 
 
@@ -421,7 +427,7 @@ try:
                             print(f"[DEBUG] Repeating WHILE: jumping to line {block['start_line']}")
                         self.control_stack.append(block)
                         self.current_line = block["start_line"] - 1
-                        return  # DONTT continue past this point
+                        return
                     else:
                         if debug:
                             print(f"[DEBUG] Exiting WHILE loop")
@@ -506,15 +512,11 @@ try:
                     self.raiseError(f"--ErrID94: Variable '{var_name}' not defined.")
                     return ""
 
-                return str(val)  # 🔥 ALWAYS raw
+                return str(val)
 
             if self.vardebug:
                 print(f"[DEBUG] Final variable replacement in: {text}")
-
-            # FIRST resolve variables
             text = re.sub(r"\$([a-zA-Z_][a-zA-Z0-9_]*)", var_replacer, text)
-
-            # THEN run functions
             text = re.sub(r"##([\w]+:\([^\)]*\))", func_replacer, text)
             return self.replace_nibbits(text)
         def eval_condition(self, condition_str):
@@ -1015,7 +1017,7 @@ try:
                 self.loaderrorcount+=1;self.raiseError("--ErrID72: Script Execution Mode Only (SEMO) is enabled. Cannot run commands.")if getattr(self, "trystate")=="False" else print(f"[WARNING] Script Execution Mode Only (SEMO) is enabled. Cannot run commands, ignored due to try block.")
             if not command or command.startswith(("//", "\\")):
                 return
-            if "##" in command and not command.startswith("prt ") and not self.in_function_definition:
+            if "##" in command and not self.in_function_definition:
                 command = self.replace_nibbits(command)
             if getattr(self, "in_function_definition", False):
                 if command.strip().lower() == "fncend":
@@ -1814,8 +1816,6 @@ try:
                 var_name = args[0]
                 op1_token = args[1]
                 op2_expr = " ".join(args[2:]) if len(args) > 2 else None
-
-                # 🔥 VARIABLE FETCH (LOCAL FIRST)
                 def get_var(name):
                     if name in self.local_variables:
                         return self.local_variables[name][0]
@@ -1823,21 +1823,15 @@ try:
                         return self.variables[name][0]
                     else:
                         raise ValueError(f"Variable '{name}' not defined.")
-
-                # 🔥 PARSE OPERAND 1
                 if op1_token.startswith("$"):
                     operand1 = get_var(op1_token[1:])
                 else:
                     operand1 = float(op1_token) if '.' in op1_token else int(op1_token)
-
-                # 🔥 SUBSTITUTE ONLY $vars (NOT raw words)
                 def substitute_vars(expr):
                     def replace_var(match):
                         varname = match.group(1)
                         return str(get_var(varname))
                     return re.sub(r'\$([a-zA-Z_]\w*)', replace_var, expr)
-
-                # 🔥 PARSE OPERAND 2 (if exists)
                 if op2_expr:
                     op2_eval = substitute_vars(op2_expr)
 
@@ -1847,16 +1841,12 @@ try:
                     operand2 = eval(op2_eval, {"__builtins__": {}})
                 else:
                     operand2 = None
-
-                # 🔥 FORCE NUMERIC
                 def to_number(x):
                     return float(x) if isinstance(x, float) or '.' in str(x) else int(x)
 
                 operand1 = to_number(operand1)
                 if operand2 is not None:
                     operand2 = to_number(operand2)
-
-                # 🔥 OPERATIONS
                 if operation == "add":
                     result = operand1 + operand2
                 elif operation == "sub":
@@ -1884,7 +1874,6 @@ try:
                 else:
                     raise ValueError(f"Unknown operation '{operation}'.")
 
-                # 🔥 STORE RESULT (respect scope via store_variable)
                 result_type = "int" if isinstance(result, int) or result == int(result) else "float"
                 self.store_variable(var_name, int(result) if result_type == "int" else result, result_type)
 
