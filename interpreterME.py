@@ -413,8 +413,10 @@ try:
             block_type = block.get("type")
 
             if debug:
-                print(f"[DEBUG] END: Popped block: {block}")
-
+                print(f"[DEBUG] END:")
+                print(f"  popped -> {block}")
+                print(f"  type   -> {block.get('type') if isinstance(block, dict) else type(block)}")
+                print(f"  full stack -> {self.control_stack if hasattr(self, 'control_stack') else 'NO STACK FOUND'}")
             if block_type == "while":
                 if block["executed"]:
                     try:
@@ -1012,7 +1014,6 @@ try:
             target[var_name] = (value, data_type)
         def handle_command(self, command):
             """Processes commands, handles function definitions, and executes appropriately."""
-            # Early return for empty lines or comments
             if self.REPL == 1 and self.semo == True and not(("semo" in command) and ("setclientrule" in command)):
                 self.loaderrorcount+=1;self.raiseError("--ErrID72: Script Execution Mode Only (SEMO) is enabled. Cannot run commands.")if getattr(self, "trystate")=="False" else print(f"[WARNING] Script Execution Mode Only (SEMO) is enabled. Cannot run commands, ignored due to try block.")
             if not command or command.startswith(("//", "\\")):
@@ -1213,39 +1214,36 @@ try:
         def cmd_reg(self, raw_args):
             raw_args = self.replace_nibbits(raw_args)
             parts = raw_args.strip().split()
-
             var_type = parts[0]
             var_name = parts[1]
             var_value_raw = " ".join(parts[2:])
-
             if self.vardebug:
                 print(f"[DEBUG] Parsed Variable '{var_name}' of type '{var_type}' with value '{var_value_raw}'")
-        
             try:
-                # substitute variables
-
                 expr = self.replace_variables(var_value_raw)
-
                 if self.mathdebug:
                     print(f"[DEBUG] Final expression to eval: '{expr}'")
-
-                # one eval for all types
-                evaluated = eval(expr, {"__builtins__": {}}, {})
-
                 if var_type == "int":
-                    final_value = int(evaluated)
+                    final_value = int(eval(expr))
                 elif var_type == "float":
-                    final_value = float(evaluated)
+                    final_value = float(eval(expr))
                 elif var_type == "str":
                     try:
-                        evaluated = eval(expr, {"__builtins__": {}}, {})
-                        final_value = str(evaluated)
-                    except Exception:
-                        if (expr.startswith('"') and expr.endswith('"')) or (expr.startswith("'") and expr.endswith("'")):
-                            final_value = expr[1:-1]
-                        else:
-                            final_value = expr
+                        expr = expr.strip()
 
+                        # Case 1: Proper quoted string → evaluate safely
+                        if (expr.startswith('"') and expr.endswith('"')) or (expr.startswith("'") and expr.endswith("'")):
+                            evaluated = eval(expr, {"__builtins__": {}}, {})
+                            final_value = str(evaluated)
+
+                        else:
+                            # Case 2: Raw value → treat as literal string ALWAYS
+                            final_value = str(expr)
+
+                    except Exception as e:
+                        if self.vardebug:
+                            print(f"[DEBUG] String eval fallback for '{expr}' due to: {e}")
+                        final_value = str(expr)
                 elif var_type == "list":
                     if expr.startswith("[") and expr.endswith("]"):
                         inner = expr[1:-1].strip()
@@ -1268,17 +1266,13 @@ try:
                         final_value = bool(evaluated)
                 else:
                     final_value = evaluated
-
             except Exception as e:
                 self.loaderrorcount += 1
                 self.raiseError(f"--ErrID84: Failed to evaluate variable '{var_name}': {e}")if getattr(self, "trystate")=="False" else print(f"[WARNING] Failed to evaluate variable '{var_name}': {e}, ignored due to try block.")
-
             if self.vardebug:
                 print(f"[DEBUG] Storing variable '{var_name}' = {final_value} (Type: {type(final_value).__name__}) "
                     f"in {'local' if self.in_function_definition else 'global'} scope")
-
             self.store_variable(var_name, final_value, var_type, local=self.local)
-
         def cmd_delete_file(self, args):
             """
             Deletes a specified file.
@@ -1470,17 +1464,21 @@ try:
             self.control_stack.clear()
             exit()
         def cmd_return(self, args):
-            """
-            Stops execution of the current function and returns a value.
-            Syntax:
-                return value
-            """
-            if self.ctrflwdebug:
-                print(f"[DEBUG] Return triggered with value: {args}")
-            
-            self.return_flag = True
-            self.return_value =args
+            value = self.replace_variables(args.strip())
 
+            if self.ctrflwdebug:
+                print(f"[DEBUG] RETURN triggered with value: {value}")
+
+            self.return_flag = True
+            self.return_value = value
+
+            # Clean control stack until function
+            while self.control_stack:
+                popped = self.control_stack.pop()
+                if self.ctrflwdebug:
+                    print(f"[DEBUG] RETURN cleanup popping: {popped}")
+                if popped.get("type") == "function":
+                    break
         def cmd_def(self, args):
             """
             Starts the definition of a new function with optional parameters.
@@ -1557,6 +1555,7 @@ try:
             })
             self.local = True
             self.local_variables = {}
+
             def depth_split(s: str):
                 parts = []
                 buf = ""
@@ -1615,7 +1614,10 @@ try:
                 self.loaderrorcount += 1
                 self.raiseError(f"--ErrID37: Function '{function_name}' not defined.") if getattr(self, "trystate") == "False" else print(f"[WARNING] Function '{function_name}' not defined, ignored due to try block.")
                 return
-
+            self.control_stack.append({
+                "type": "function",
+                "name": function_name
+            })
             fnc = self.functions[function_name]
             fnc_params = fnc.get("params", [])
             fnc_body = fnc.get("body", [])
