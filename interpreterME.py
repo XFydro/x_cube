@@ -10,9 +10,12 @@ __Patience because python is slow af :P
 """
 from difflib import SequenceMatcher
 import datetime, platform, uuid, getpass, socket, traceback, builtins, argparse, time, re, os, shlex, json, difflib, subprocess, importlib, random, math, struct
+#import gc
+import ast
+import operator
 #import cProfile
 REPL=0 #on default script mode.
-VERSION=3.965 #version (For IDE and more)
+VERSION=3.97 #version (For IDE and more)
 
 def install_package(package, alias=None)->None:
     import sys
@@ -86,7 +89,7 @@ try:
             #---
             self.command_mapping:dict = { 
                 'add': self.cmd_add,
-                'a_file': self.cmd_append_file,           
+                'a_file': self.cmd_a_file,           
                 'call': self.cmd_call,
                 'cls': self.cmd_clear,
                 'create_dir': self.cmd_create_dir,
@@ -114,7 +117,7 @@ try:
                 'prt': self.cmd_prt,
                 'reg': self.cmd_reg,
                 'return': self.cmd_return,
-                'r_file': self.cmd_read_file,
+                'r_file': self.cmd_r_file,
                 'search_file': self.cmd_search_file,
                 'setclientrule': self.setclientrule,
                 'sqrt': self.cmd_sqrt,
@@ -122,9 +125,22 @@ try:
                 'brute': self.cmd_brute,
                 'wait': self.cmd_wait,
                 'while': self.cmd_while,
-                'w_file': self.cmd_create_file,
+                'w_file': self.cmd_w_file,
                 '--info': self.info,
                 '--help': self.help,
+                #'output_memory':self.om,
+            }
+
+            self._ALLOWED_OPS = {
+                ast.Add: operator.add,
+                ast.Sub: operator.sub,
+                ast.Mult: operator.mul,
+                ast.Div: operator.truediv,
+                ast.FloorDiv: operator.floordiv,
+                ast.Mod: operator.mod,
+                ast.Pow: operator.pow,
+                ast.USub: operator.neg,
+                ast.UAdd: operator.pos,
             }
             self.exceptional_commands:dict={
                 "//",
@@ -138,7 +154,7 @@ try:
                 "##interpreter:memory": lambda: f"{round(psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024, 2)} MB" if 'psutil' in globals() else "[psutil module not available]",
                 "##interpreter:platform": lambda: platform.platform(),
                 "##interpreter:eval": lambda x="": eval(x) if x else None,
-
+                "##interpreter:cl":lambda:self.current_line,
                 "##random": lambda: random.random(),
                 "##randint": lambda: random.randint(0, 100),
                 "##timeseconds": lambda: time.time(),
@@ -201,12 +217,12 @@ try:
                     ) if len(hex_str) >= 6 else (0, 0, 0)
                 )(s.strip('"').lstrip("#") + "000000"),
 
-                "##readfile": lambda path="": open(path, "r").read() if os.path.exists(path) else "[File not found]",#returns entire file content as an single string
+                #"##readfile": lambda path="": open(path, "r").read() if os.path.exists(path) else "[File not found]",#returns entire file content as an single string, removed #26.06.26
             }
         def raiseError(self, message):
             raise Error(message)
         def setclientrule(self, args):
-            allowed=['REPL', 'semo','disableprt']
+            allowed=['semo','disableprt','reset']
             newargs=args.split(" ")
             for i in range(0,len(newargs)):
                 if newargs[i] in allowed:
@@ -220,6 +236,7 @@ try:
                     self.semo = False
                     self.disableprt = False
                     print("[DEBUG] All client rules reset to default.") if self.cmdhandlingdebug else None
+
         def info(self):
             print(f'Running on version:{VERSION}')
             print(f'Developed by Raven Corvidae 07.2024-Present, under GNU GPLv3.0 license.')
@@ -318,9 +335,6 @@ try:
                 print(f"[DEBUG] Try pushed to stack.")
 
         def cmd_if(self, condition):
-            """
-            Evaluate an IF condition and push it to the control stack.
-            """
             try:
                 condition = self.replace_nibbits(condition)  # Replace any additional parameters like ##random, ##REPL, etc :3
                 result = self.eval_condition(condition)  # Pass the full condition as a single string
@@ -334,18 +348,8 @@ try:
             if not result:
                 if self.ctrflwdebug:
                     print("[DEBUG] Skipping subsequent commands inside this IF block.")
-        def evaluate_math_expression(self, expression):
-            # Replace variables in the expression
-            try:
-                return eval(expression, {"__builtins__": {}}, {})
-            except Exception as e:
-                print(f"[MATH ERROR] {e}")
-                return "<MATH_ERROR>"
 
         def cmd_else(self):
-            """
-            Execute an ELSE block only if the preceding IF block was false.
-            """
             if not self.control_stack:
                 self.loaderrorcount+=1;self.raiseError("--ErrID78: ELSE without a matching IF.")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] ELSE without a matching IF, ignored due to bruteforce.")
 
@@ -365,10 +369,6 @@ try:
                     print("[DEBUG] Skipping ELSE block because IF condition was true.")
                 
         def cmd_while(self, condition):
-            """
-            Implements a while-loop functionality with proper nested execution.
-            Skips pushing a new while-loop if the last one is on the same line.
-            """
             if (self.control_stack and 
                 self.control_stack[-1]["type"] == "while" and 
                 self.control_stack[-1]["start_line"] == self.current_line):
@@ -455,52 +455,39 @@ try:
                     return False
 
             return True 
-
-        def list_replacer(self, expr):
-            """
-            Replaces $list[index] patterns in an expression with the actual element.
-            Keeps strings quoted so eval won't break.
-            """
-            pattern = re.compile(r"\$(\w+)\[(\d+)\]")
-
-            def replacer(match):
-                var_name, index = match.group(1), int(match.group(2))
-                if var_name not in self.variables:
-                    self.raiseError(f"--ErrID99: Variable '{var_name}' not defined")
-                    return "None"
-                value, vtype = self.variables[var_name]
-                if vtype != "list":
-                    self.raiseError(f"--ErrID100: Variable '{var_name}' is not a list")
-                    return "None"
-                try:
-                    element = value[index]
-                    return f'"{element}"' 
-                except IndexError:
-                    self.raiseError(f"--ErrID101: Index {index} out of range for list '{var_name}'")
-                    return "None"
-            return pattern.sub(replacer, expr)
-
         def replace_variables(self, text, quoted=None):
             if not self.should_execute():
                 return text
-
-            text = self.list_replacer(text)
-
+            
             if self.vardebug:
                 print(f"[DEBUG] Replacing variables in: {text}")
 
-            def func_replacer(match):
+            def func_replacer(match):#fixed so it doesnt keep recognizing nibbits as user defined functions #13.6.26-Raven
                 raw = match.group(1)
-                if ":" in raw:
-                    func_name, arg_str = raw.split(":", 1)
-                    arg_str = arg_str.strip("()")
-                    resolved_args = self.replace_variables(arg_str)
-                    result = self.cmd_call(f"{func_name} {resolved_args}")
-                    return str(result) if result is not None else ""
-                return f"<INVALID:{raw}>"
 
+                if ":" not in raw:
+                    return match.group(0)
+
+                func_name, arg_str = raw.split(":", 1)
+                arg_str = arg_str.strip("()")
+
+                if f"##{func_name}" in self.nibbits:
+                    return match.group(0)
+                if func_name in self.functions:
+                    resolved_args = self.replace_variables(arg_str)
+
+                    call_args = func_name
+                    if resolved_args.strip():
+                        call_args += f" {resolved_args}"
+
+                    result = self.cmd_call(call_args)
+
+                    return str(result) if result is not None else ""
+
+                return match.group(0)
             def var_replacer(match):
                 var_name = match.group(1)
+                index = match.group(2)
 
                 if var_name in self.local_variables:
                     val = self.local_variables[var_name][0]
@@ -509,19 +496,36 @@ try:
                 else:
                     self.raiseError(f"--ErrID94: Variable '{var_name}' not defined.")
                     return ""
+                if index is not None:
+                    try:
+                        idx = int(index)
+
+                        if isinstance(val, (str, list)):
+                            return str(val[idx])
+
+                    except Exception:
+                        self.raiseError(f"--ErrID107: Invalid index '{index}' for variable '{var_name}'")
+                        return ""
 
                 return str(val)
-
             if self.vardebug:
                 print(f"[DEBUG] Final variable replacement in: {text}")
-            text = re.sub(r"\$([a-zA-Z_][a-zA-Z0-9_]*)", var_replacer, text)
+            text = re.sub(r"\$([a-zA-Z_][a-zA-Z0-9_]*)(?:\[(\-?\d+)\])?",var_replacer,text)
             text = re.sub(r"##([\w]+:\([^\)]*\))", func_replacer, text)
             return self.replace_nibbits(text)
         def eval_condition(self, condition_str):
             condition_str = self.replace_variables(condition_str, quoted=True)  # Replace variables in the condition
-            condition_str = self.replace_nibbits(condition_str)  # Replace nibbits in the condition
             if self.conddebug:
                 print(f"[DEBUG] Evaluating condition: {condition_str}")
+
+            try:
+                return bool(eval(
+                    condition_str,
+                    {"__builtins__": {}},
+                    {}
+                ))
+            except:
+                pass
 
             def debug(msg):
                 if self.conddebug:
@@ -529,17 +533,6 @@ try:
             import ast
             import operator
 
-            _ALLOWED_OPS = {
-                ast.Add: operator.add,
-                ast.Sub: operator.sub,
-                ast.Mult: operator.mul,
-                ast.Div: operator.truediv,
-                ast.FloorDiv: operator.floordiv,
-                ast.Mod: operator.mod,
-                ast.Pow: operator.pow,
-                ast.USub: operator.neg,
-                ast.UAdd: operator.pos,
-            }
             def safe_eval_math(expr):
                 def _eval(node):
                     if isinstance(node, ast.Constant):
@@ -548,13 +541,13 @@ try:
                         raise ValueError
 
                     if isinstance(node, ast.BinOp):
-                        return _ALLOWED_OPS[type(node.op)](
+                        return self._ALLOWED_OPS[type(node.op)](
                             _eval(node.left),
                             _eval(node.right)
                         )
 
                     if isinstance(node, ast.UnaryOp):
-                        return _ALLOWED_OPS[type(node.op)](_eval(node.operand))
+                        return self._ALLOWED_OPS[type(node.op)](_eval(node.operand))
 
                     raise ValueError
 
@@ -839,19 +832,6 @@ try:
 
                 except Exception as e:
                     self.raiseError(f"[Uncategorized Error] : {e}")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] Uncategorized Error : {e}, ignored due to bruteforce.")
-
-        def _int_replacer(self, args):
-            for i in range(len(args)):
-                try:
-                    expr = str(args[i]).strip()
-                    if any(op in expr for op in ['+', '-', '*', '/']):
-                        args[i] = int(eval(expr))
-                    else:
-                        args[i] = int(expr)
-                except:
-                    pass
-            return args
-
         def _decode_escapes(self, text):
             """Turn escape sequences like \\n into actual newlines."""
             text = text.replace("\\r\\n", "\r\n")
@@ -859,106 +839,161 @@ try:
             text = text.replace("\\t", "\t")
             text = text.replace("\\r", "\r")
             return text
-        def _split_list_literal(self, text):
-            """
-            Split a list literal safely, respecting quotes and nested brackets.
-            Example:
-            [1, 2, "Hello, world", [3,4]]
-            -> ['1', '2', '"Hello, world"', '[3,4]']
-            """
-            items, buf = [], ""
-            depth = 0
-            in_quotes = None
 
-            for ch in text:
-                if ch in "\"'":
-                    if in_quotes is None:
-                        in_quotes = ch
-                    elif in_quotes == ch:
-                        in_quotes = None
-                    buf += ch
-                elif ch == "[" and not in_quotes:
-                    depth += 1
-                    buf += ch
-                elif ch == "]" and not in_quotes:
-                    depth -= 1
-                    buf += ch
-                elif ch == "," and depth == 0 and not in_quotes:
-                    if buf.strip():
-                        items.append(buf.strip())
-                    buf = ""
-                else:
-                    buf += ch
-
-            if buf.strip():
-                items.append(buf.strip())
-
-            return items
-
-
-
-        def cmd_create_file(self, args):
-            parts = shlex.split(args)
-            if len(parts) < 2:
-                self.loaderrorcount += 1
-                self.raiseError("--ErrID50: Missing filename or content for create_file command.")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] Missing filename or content for create_file command, ignored due to bruteforce.")
-               
-                return
-
-            filename, content = parts[0], parts[1]
-            content = self._decode_escapes(content)
-            with open(filename, 'w', encoding='utf-8', errors='replace') as f:
-                f.write(content)
-            print(f"File '{filename}' created successfully.")
-
-        def cmd_append_file(self, args):
-            parts = shlex.split(args)
-            if len(parts) < 2:
-                self.loaderrorcount += 1
-                self.raiseError("--ErrID55: Missing filename or content for append_file command.")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] Missing filename or content for append_file command, ignored due to bruteforce.")
-               
-                return
-
-            filename, content = parts[0], parts[1]
-            content = self._decode_escapes(content)
-            with open(filename, 'a', encoding='utf-8', errors='replace') as f:
-                f.write(content)
-            print(f"Content appended to file '{filename}' successfully.")
-
-
-        def cmd_read_file(self, args):
-            """
-            Reads the content of a file and prints or stores it.
-            Syntax: read_file filename [var_name]
-            """
-            parts = args.split()
-
-            # Ensure the command has at least the required arguments
-            if len(parts) < 2:
-                self.loaderrorcount+=1;self.raiseError("--ErrID52: Missing filename or variable name for read_file command.")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] Missing filename or variable name for read_file command, ignored due to bruteforce.")
-               
-
-                return
-
-            filename = parts[0]
-
-            # Check if the filename is a variable reference and not a quoted literal
-            if filename in self.variables and not (filename.startswith('"') and filename.endswith('"')):
-                filename = self.variables[filename][0]
-
+        def cmd_r_file(self, args):
             try:
-                with open(filename, 'r', encoding='utf-8', errors='replace') as f:
-                    content = f.read()
+                parts = shlex.split(args)
 
-                var_name = parts[1]  # Store the content in the specified variable
+                if len(parts) < 3:
+                    self.loaderrorcount += 1
+                    if getattr(self, "bruteforce", "False") == "False":
+                        self.raiseError("--ErrID116: Missing file path, line index, or variable name for r_file command.")
+                    else:
+                        print("[WARNING] Missing file path, line index, or variable name for r_file command, ignored due to bruteforce.")
+                    return
+
+                filename = parts[0]
+                line_index = parts[1]
+                var_name = parts[2]
+
+                if filename in self.variables:
+                    filename = str(self.variables[filename][0])
+
+                if line_index in self.variables:
+                    line_index = self.variables[line_index][0]
+
+                try:
+                    line_index = int(line_index)
+                except ValueError:
+                    self.loaderrorcount += 1
+                    if getattr(self, "bruteforce", "False") == "False":
+                        self.raiseError("--ErrID117: Invalid line index for r_file command.")
+                    else:
+                        print("[WARNING] Invalid line index for r_file command, ignored due to bruteforce.")
+                    return
+
+                if line_index < 0:
+                    self.loaderrorcount += 1
+                    if getattr(self, "bruteforce", "False") == "False":
+                        self.raiseError("--ErrID118: Line index cannot be negative.")
+                    else:
+                        print("[WARNING] Line index cannot be negative, ignored due to bruteforce.")
+                    return
+
+                with open(filename, 'r', encoding='utf-8', errors='replace') as f:
+                    lines = f.readlines()
+
+                if line_index >= len(lines):
+                    self.loaderrorcount += 1
+                    if getattr(self, "bruteforce", "False") == "False":
+                        self.raiseError(f"--ErrID119: Line index {line_index} out of range. File has {len(lines)} lines.")
+                    else:
+                        print(f"[WARNING] Line index {line_index} out of range, ignored due to bruteforce.")
+                    return
+
+                content = lines[line_index].rstrip('\r\n')
+
                 self.store_variable(var_name, content, "str")
-                print(f"File content stored in variable '{var_name}'.")
+
+                print(f"Line {line_index} from '{filename}' stored in variable '{var_name}'.")
+
             except FileNotFoundError:
-                self.loaderrorcount+=1;self.raiseError(f"--ErrID53: File '{filename}' not found.")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] File '{filename}' not found, ignored due to bruteforce.")
-               
+                self.loaderrorcount += 1
+                if getattr(self, "bruteforce", "False") == "False":
+                    self.raiseError(f"--ErrID120: File '{filename}' not found.")
+                else:
+                    print(f"[WARNING] File '{filename}' not found, ignored due to bruteforce.")
+
+            except PermissionError:
+                self.loaderrorcount += 1
+                if getattr(self, "bruteforce", "False") == "False":
+                    self.raiseError(f"--ErrID121: Permission denied while reading '{filename}'.")
+                else:
+                    print(f"[WARNING] Permission denied while reading '{filename}', ignored due to bruteforce.")
+
+            except OSError as e:
+                self.loaderrorcount += 1
+                if getattr(self, "bruteforce", "False") == "False":
+                    self.raiseError(f"--ErrID122: Failed to read file '{filename}'. Error: {e}")
+                else:
+                    print(f"[WARNING] Failed to read file '{filename}'. Error: {e}, ignored due to bruteforce.")
 
             except Exception as e:
-                self.raiseError(f"[Unrecognised Error] Failed to read file. Error: {e}")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] Unrecognised Error: Failed to read file. Error: {e}, ignored due to bruteforce.")
+                self.loaderrorcount += 1
+                if getattr(self, "bruteforce", "False") == "False":
+                    self.raiseError(f"--ErrID123: Unexpected error during r_file execution. Error: {e}")
+                else:
+                    print(f"[WARNING] Unexpected error during r_file execution. Error: {e}, ignored due to bruteforce.")
+        def cmd_w_file(self, args):
+            try:
+                parts = shlex.split(args)
+
+                if len(parts) < 1:
+                    self.loaderrorcount += 1
+                    if getattr(self, "bruteforce", "False") == "False":
+                        self.raiseError("--ErrID110: Missing file path for w_file command.")
+                    else:
+                        print("[WARNING] Missing file path for w_file command, ignored due to bruteforce.")
+                    return
+
+                filename = parts[0]
+                content = " ".join(parts[1:]) if len(parts) > 1 else ""
+                content = self._decode_escapes(content)
+
+                with open(filename, 'w', encoding='utf-8', errors='replace') as f:
+                    f.write(content)
+
+                print(f"File '{filename}' written successfully.")
+
+            except PermissionError:
+                self.loaderrorcount += 1
+                if getattr(self, "bruteforce", "False") == "False":
+                    self.raiseError(f"--ErrID111: Permission denied while writing to '{filename}'.")
+                else:
+                    print(f"[WARNING] Permission denied while writing to '{filename}', ignored due to bruteforce.")
+
+            except OSError as e:
+                self.loaderrorcount += 1
+                if getattr(self, "bruteforce", "False") == "False":
+                    self.raiseError(f"--ErrID112: Failed to write file '{filename}'. Error: {e}")
+                else:
+                    print(f"[WARNING] Failed to write file '{filename}'. Error: {e}, ignored due to bruteforce.")
+
+
+        def cmd_a_file(self, args):
+            try:
+                parts = shlex.split(args)
+
+                if len(parts) < 2:
+                    self.loaderrorcount += 1
+                    if getattr(self, "bruteforce", "False") == "False":
+                        self.raiseError("--ErrID113: Missing file path or content for a_file command.")
+                    else:
+                        print("[WARNING] Missing file path or content for a_file command, ignored due to bruteforce.")
+                    return
+
+                filename = parts[0]
+                content = " ".join(parts[1:])
+                content = self._decode_escapes(content)
+
+                with open(filename, 'a', encoding='utf-8', errors='replace') as f:
+                    f.write(content)
+
+                print(f"Content appended to '{filename}' successfully.")
+
+            except PermissionError:
+                self.loaderrorcount += 1
+                if getattr(self, "bruteforce", "False") == "False":
+                    self.raiseError(f"--ErrID114: Permission denied while appending to '{filename}'.")
+                else:
+                    print(f"[WARNING] Permission denied while appending to '{filename}', ignored due to bruteforce.")
+
+            except OSError as e:
+                self.loaderrorcount += 1
+                if getattr(self, "bruteforce", "False") == "False":
+                    self.raiseError(f"--ErrID115: Failed to append to file '{filename}'. Error: {e}")
+                else:
+                    print(f"[WARNING] Failed to append to file '{filename}'. Error: {e}, ignored due to bruteforce.")
 
         def fetch_data_from_URL(self, url=None, timeout=20):
             install_package("requests")
@@ -1027,7 +1062,6 @@ try:
 
             is_prt = command.startswith('prt ')
             if is_prt:
-                parts = re.findall(r'\S+|\s+', command)
                 cmd = 'prt'
                 args = command[4:] 
             else:
@@ -1038,10 +1072,10 @@ try:
                 cmd = parts[0]
                 args = ' '.join(parts[1:]).strip()
             #removed '//' comment stripping as it was causing problems with URLS, Paths, and floor division in math expressions TwT #15.5.26-Raven
-            if cmd in ("if"):
+            if cmd in ("if") and "$"in args:
                 args=self.replace_variables(args, True)
             else:
-                if not cmd == "while":
+                if not cmd == "while" and "$" in args:
                     args = self.replace_variables(args)
             if not self.should_execute():
                 control_flow_commands = {"else", "end", "while", "if","brute"}
@@ -1059,7 +1093,7 @@ try:
             if cmd in self.command_mapping:
                 if self.cmdhandlingdebug:
                     print(f"[DEBUG] Handling command: '{command}'")
-                no_arg_commands = {"else", "end", "dev.custom", "flush", "--info", "fncend", "brute"}
+                no_arg_commands = {"else", "end", "dev.custom", "flush", "--info", "fncend", "brute","output_memory"}
                 if cmd in no_arg_commands:
                     self.command_mapping[cmd]()
                 else:
@@ -1070,10 +1104,7 @@ try:
                 self.loaderrorcount+=1;self.raiseError(f"--ErrID73: Unrecognized command: {command}")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] Unrecognized command: {command}, ignored due to bruteforce.")
 
         def dev(self, raw_args):
-            """
-            Enable or disable various debugging options dynamically.
-            
-            Usage:
+            Usage="""
             - dev controlflow  → Enables control flow debugging
             - dev print        → Enables print debugging
             - dev math         → Enables math debugging
@@ -1082,18 +1113,16 @@ try:
             - dev requests     → Enables requests debugging
             - dev condition    → Enables condition evaluation debugging
             - dev variable     → Enables variable handling debugging
-            - dev command  → Enables Command handling debugging
+            - dev command      → Enables Command handling debugging
             - dev None         → Disables all debugging options
             - dev All          → Enables all debugging options
             """
-            
             #  Debugging options dictionary
             debug_options = {
                 "controlflow": "ctrflwdebug",
                 "print": "prtdebug",
                 "math": "mathdebug",
                 "file": "filedebug",
-                "colorama": "clramadebug",
                 "requests": "reqdebug",
                 "command": "cmdhandlingdebug",
                 "condition": "conddebug",
@@ -1103,6 +1132,9 @@ try:
                 print("[SELF-DEBUG] Please provide a debug option (e.g., 'dev controlflow').")
                 return
             args = raw_args.lower().split()
+            if "help" in args:
+                print(Usage)
+                return
             if "all" in args or "none" in args:
                 enable = "all" in args
                 self.debug = enable
@@ -1125,7 +1157,7 @@ try:
    
         def replace_nibbits(self, input_str):
             """
-            Replaces ##key and ##key:(arg) additional parameters safely and completely.
+            Replaces ##key and ##key:(arg) nibbits safely and completely.
             Handles:
                 - ##key
                 - ##key:with:colons
@@ -1139,7 +1171,7 @@ try:
                 return input_str
             if not "##" in input_str:
                 return input_str
-            
+
             bracket_pattern = re.compile(r"(##[a-zA-Z_]\w*(?::[a-zA-Z_]\w+)*):\(([^()]*)\)")
             matches = bracket_pattern.findall(input_str)
 
@@ -1148,7 +1180,6 @@ try:
                 arg_value = arg
                 if "$" in arg_value:
                     arg_value = self.replace_variables(arg_value)
-
                 try:
                     if callable(func):
                         clean_arg = arg_value.strip()
@@ -1205,7 +1236,10 @@ try:
             if self.vardebug:
                 print(f"[DEBUG] Parsed Variable '{var_name}' of type '{var_type}' with value '{var_value_raw}'")
             try:
-                expr = self.replace_variables(var_value_raw)
+                if "$" in var_value_raw:
+                    expr = self.replace_variables(var_value_raw)
+                else:
+                    expr=var_value_raw
                 if self.mathdebug:
                     print(f"[DEBUG] Final expression to eval: '{expr}'")
                 if var_type == "int":
@@ -1230,25 +1264,13 @@ try:
                         if self.vardebug:
                             print(f"[DEBUG] String eval fallback for '{expr}' due to: {e}")
                         final_value = str(expr)
-                #removed list type since i dont plan on working on it, yet. #15.5.26-Raven        
-                #elif var_type == "list":
-                    #if expr.startswith("[") and expr.endswith("]"):
-                        #inner = expr[1:-1].strip()
-                        #parts = self._split_list_literal(inner)
-                        #final_value = []
-                        #for p in parts:
-                            #try:
-                                #val = eval(p, {"__builtins__": {}}, {})
-                            #except Exception:
-                                #val = p 
-                            #final_value.append(val)
-                    #else:
-                        #final_value = [evaluated]
                 elif var_type == "bool":
+                    evaluated = eval(expr, {"__builtins__": {}}, {})
+
                     if isinstance(evaluated, bool):
                         final_value = evaluated
                     elif isinstance(evaluated, str):
-                        final_value = evaluated.lower() in ("true", "1")
+                        final_value = evaluated.lower() in ("True", "1")
                     else:
                         final_value = bool(evaluated)
                 else:
@@ -1422,29 +1444,39 @@ try:
                     self.raiseError(f"[Unrecognised Error] {error_message}")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] Unrecognised Error: {error_message}, ignored due to bruteforce.")
 
         def cmd_fetch(self, args):
-            if len(args) < 1:
-                self.loaderrorcount+=1;self.raiseError("--ErrID3: Incorrect number of arguments for fetch command")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] Incorrect number of arguments for fetch command, ignored due to bruteforce.")
-               
-                return
-            url = args[0]
-            if url in self.variables:           
-                self.fetch_data_from_URL(self.variables[url])
-            else:
-                self.fetch_data_from_URL(args)
+            parts = shlex.split(args)
 
+            if len(parts) < 1:
+                self.loaderrorcount += 1
+                if getattr(self, "bruteforce") == "False":
+                    self.raiseError("--ErrID3: Incorrect number of arguments for fetch command")
+                else:
+                    print("[WARNING] Incorrect number of arguments for fetch command, ignored due to bruteforce.")
+                return
+
+            url = parts[0]
+            store_var = parts[1] if len(parts) > 1 else None
+
+            self.fetch_data_from_URL(url)
+
+            if store_var:
+                self.store_variable(store_var, self.output, "str", local=self.local)
         def cmd_exit(self, args=None):
+            
             if args:
                 if (args[0]=='"' and args[-1]=='"') or (args[0]=="'" and args[-1]=="'"):
                     print(f"{args[1:][:-1]}")
                 else:
-                    print("--ErrID:105: Incorrect Exit Command Syntax (exit 'text')")
+                    print(f"Exit:{args}")
                 if self.cmdhandlingdebug:    
                     print("[DEBUG] Exiting")
             self.control_stack.clear()
             exit()
         def cmd_return(self, args):
-            value = self.replace_variables(args.strip())
-
+            if "$" in args:
+                value = self.replace_variables(args.strip())
+            else:
+                value=args
             if self.ctrflwdebug:
                 print(f"[DEBUG] RETURN triggered with value: {value}")
 
@@ -1486,8 +1518,8 @@ try:
 
             except Exception as e:
                 self.raiseError(f"{e}")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] {e}, ignored due to bruteforce.")
-               
-                
+                    
+                        
         def cmd_fncend(self):
             """
             Marks the end of a function definition block.
@@ -1565,7 +1597,6 @@ try:
 
             args = self.replace_nibbits(args)
             parts = depth_split(args)  
-            parts = self._int_replacer(parts)
 
             if not parts:
                 self.loaderrorcount += 1
@@ -1611,37 +1642,6 @@ try:
             except RecursionError:
                 self.loaderrorcount += 1
                 self.raiseError(f"--ErrID99: Maximum recursion depth exceeded in function '{function_name}'.") if getattr(self, "bruteforce") == "False" else print(f"[WARNING] Maximum recursion depth exceeded in function '{function_name}', ignored due to bruteforce.")
-        """
-        Removed #15.5.26-Raven
-        def cmd_switch(self, args):
-            if not args:
-                self.loaderrorcount+=1;self.raiseError("--ErrID1: Incorrect number of arguments for switch command")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] Incorrect number of arguments for switch command, ignored due to bruteforce.")
-
-            switch_var = args[0]
-            if switch_var not in self.variables:
-                self.loaderrorcount+=1;self.raiseError(f"--ErrID31: Variable '{switch_var}' not defined.")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] Variable '{switch_var}' not defined, ignored due to bruteforce.")
-               
-
-            self.control_stack.append({"type": "switch", "variable": self.variables[switch_var][0], "executed": False})
-
-        def cmd_case(self, args):
-            if not self.control_stack or self.control_stack[-1]["type"] != "switch":
-                self.loaderrorcount+=1;self.raiseError("--ErrID32: 'case' command outside of 'switch' block.")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] 'case' command outside of 'switch' block, ignored due to bruteforce.")
-               
-
-            case_value = args[0]
-            current_switch = self.control_stack[-1]
-            if not current_switch["executed"] and current_switch["variable"] == case_value:
-                current_switch["executed"] = True
-                self.handle_command(" ".join(args[1:]))
-
-        def cmd_default(self, args):
-            if not self.control_stack or self.control_stack[-1]["type"] != "switch":
-                self.loaderrorcount+=1;self.raiseError("--ErrID33: 'default' command outside of 'switch' block.")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] 'default' command outside of 'switch' block, ignored due to bruteforce.")
-               
-
-            self.control_stack[-1]["default"] = args
-        """
         def cmd_inc(self, args):
             """Increment a registered integer variable."""
             if len(args) != 1:
@@ -1680,10 +1680,15 @@ try:
         def cmd_wait(self, args):
             """Wait for a specified number of seconds."""
             try:
-                duration = int(args)
+                duration = float(args)
+                if duration<0:
+                    duration=0
                 time.sleep(duration)
             except ValueError:
-                self.loaderrorcount+=1;self.raiseError("--ErrID2: Duration must be an integer.")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] Duration must be an integer, ignored due to bruteforce.")
+                self.loaderrorcount+=1;self.raiseError("--ErrID2: Duration must be an integer or float value.")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] Duration must be an integer, ignored due to bruteforce.")
+            except OverflowError:
+                self.loaderrorcount+=1;self.raiseError("--ErrID100: Duration out of valid duration range.")if getattr(self, "bruteforce")=="False" else print(f"[WARNING] Duration out of valid duration range, ignored due to bruteforce.")
+
                
 
         def cmd_add(self, args):
@@ -1754,10 +1759,8 @@ try:
         def perform_arithmetic_operation(self, args, operation):
             try:
                 args = shlex.split(args)
-
                 if len(args) < 2:
                     raise ValueError(f"Syntax: {operation} <var_name> <operand(s)>")
-
                 var_name = args[0]
                 op1_token = args[1]
                 op2_expr = " ".join(args[2:]) if len(args) > 2 else None
@@ -1779,10 +1782,8 @@ try:
                     return re.sub(r'\$([a-zA-Z_]\w*)', replace_var, expr)
                 if op2_expr:
                     op2_eval = substitute_vars(op2_expr)
-
                     if self.cmdhandlingdebug:
                         print(f"[DEBUG] Evaluating op2: '{op2_expr}' -> '{op2_eval}'")
-
                     operand2 = eval(op2_eval, {"__builtins__": {}})
                 else:
                     operand2 = None
@@ -1854,6 +1855,7 @@ try:
             self.return_value = None
             self._math_ns={'math':math} 
             self._math_cache={}
+            self.loaded_files=[]
             # removed whatever the hell that was #15.5.26-Raven
             if self.cmdhandlingdebug:
                 print("[DEBUG] Interpreter state flushed.")
@@ -1880,14 +1882,13 @@ try:
             parser = argparse.ArgumentParser(description="X3 Interpreter")
             parser.add_argument('-f', '--file', type=str, help='File to execute as a script')
             parser.add_argument('-d', '--debug', action='store_true', help='Enable debug mode')
+            parser.add_argument('-dev', '--developer', action='store_true')
             args = parser.parse_args()
             
-            #uses debug mode if nessecary idk
             interpreter = Interpreter()
             interpreter.debug=True if args.debug else False
             interpreter.dev("all") if args.debug else ...
-
-            # If a file is provided, read commands from the file
+            
             if args.file:
                 try:
                     with open(args.file, 'r', encoding="UTF-8", errors='replace') as script_file:
@@ -1909,69 +1910,103 @@ try:
                 global REPL
                 REPL = 1
                 interpreter.REPL = 1
-
-                import os, subprocess, platform
-                LICENSE=None
-                # the x3 folder was kinda looking empty compared to other languages so i just thought making a seprate folder
-                # for repl code was cool
-                temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
-                temp_file = os.path.join(temp_dir, "repl.temp.x3")
-                os.makedirs(temp_dir, exist_ok=True)
-                os.system('cls' if os.name == 'nt' else 'clear')
-                print(f"X3 {VERSION} on {platform.system()}")
-                print(f"Developed by Raven Corvus Corvidae (2024-Present).")
-                print("Type 'exit_repl' to exit, 'license' for license info, 'run' to execute current code, 'clear' to clear current program buffer.")
-                while True:
-                    try:
-                        user_input = input(">>").strip()
-                        if user_input.lower() == "run":
-                            if os.path.exists(temp_file) and os.path.getsize(temp_file) > 0:
-                                script = f'python3 "{os.path.abspath(__file__)}" "{temp_file}"'
-                                if os.name == "nt":
-                                    subprocess.Popen(
-                                        f'start cmd /k python "{os.path.abspath(__file__)}" "-f" "{temp_file}"',
-                                        shell=True
-                                    )
-                                elif platform.system() == "Linux":
-                                    terminals = [
-                                        ["x-terminal-emulator", "-e", script],
-                                        ["gnome-terminal", "--", "bash", "-c", f'{script}; exec bash'],
-                                        ["konsole", "-e", script],
-                                        ["xterm", "-e", script]
-                                    ]
-                                    for term in terminals:
-                                        try:
-                                            subprocess.Popen(term)
-                                            break
-                                        except:
-                                            continue
-                                elif platform.system() == "Darwin": #my friend told me to do this, i dont even know what darwin is TwT #3.5.26-Raven.
-                                    subprocess.Popen([
-                                        "osascript", "-e",
-                                        f'tell application "Terminal" to do script "{script}"'
-                                    ])
-                        elif user_input.lower() == "clear":
-                            open(temp_file, "w", encoding="utf-8").close()
-                            print("Cleared.")
-                        elif user_input.lower()=="exit_repl":
-                            os._exit(0)
-                        elif user_input.lower()=="license":
-                            #fixed so the interpreter doesnt has to fetch the license everytime once the license is fetched for the first time :3 #16.5.26-Raven
-                            if LICENSE:
-                                try:
-                                    print(LICENSE:=requests.get('https://raw.githubusercontent.com/XFydro/x3/refs/heads/main/LICENSE').text)
-                                except Exception:
-                                    print("Couldn't Fetch License, Try checking your network connection.")
+                if not args.developer:
+                    import os, subprocess, platform
+                    LICENSE=None
+                    # the x3 folder was kinda looking empty compared to other languages so i just thought making a seprate folder
+                    # for repl code was cool
+                    temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp")
+                    temp_file = os.path.join(temp_dir, "repl.temp.x3")
+                    os.makedirs(temp_dir, exist_ok=True)
+                    os.system('cls' if os.name == 'nt' else 'clear')
+                    print(f"X3 {VERSION} on {platform.system()}")
+                    print(f"Developed by Raven Corvus Corvidae (2024-Present).")
+                    print("Type 'exit_repl' to exit, 'license' for license info, 'run' to execute current code, 'clear' to clear current program buffer.")
+                    print("Type 'open' to open the current program buffer in the default text editor.")
+                    while True:
+                        try:
+                            user_input = input(">>").strip()
+                            if user_input.lower() == "run":
+                                if os.path.exists(temp_file) and os.path.getsize(temp_file) > 0:
+                                    script = f'python3 "{os.path.abspath(__file__)}" "{temp_file}"'
+                                    if os.name == "nt":
+                                        subprocess.Popen(
+                                            f'start cmd /k python "{os.path.abspath(__file__)}" "-f" "{temp_file}"',
+                                            shell=True
+                                        )
+                                    elif platform.system() == "Linux":
+                                        terminals = [
+                                            ["x-terminal-emulator", "-e", script],
+                                            ["gnome-terminal", "--", "bash", "-c", f'{script}; exec bash'],
+                                            ["konsole", "-e", script],
+                                            ["xterm", "-e", script]
+                                        ]
+                                        for term in terminals:
+                                            try:
+                                                subprocess.Popen(term)
+                                                break
+                                            except:
+                                                continue
+                                    elif platform.system() == "Darwin": #my friend told me to do this, i dont even know what darwin is TwT #3.5.26-Raven.
+                                        subprocess.Popen([
+                                            "osascript", "-e",
+                                            f'tell application "Terminal" to do script "{script}"'
+                                        ])
+                                elif os.path.getsize(temp_file)==0:
+                                    print("Empty File.")
+                            elif user_input.lower() == "clear":
+                                open(temp_file, "w", encoding="utf-8").close()
+                                print("Cleared.")
+                            elif user_input.lower()=="exit_repl":
+                                os._exit(0)
+                            elif user_input.lower()=="cls_repl":
+                                os.system("cls" if os.name == "nt" else "clear") # i forgot non windows operating systems exist i am dumb #13.07.26-Raven
+                            elif user_input.lower()=="license":
+                                #fixed so the interpreter doesnt has to fetch the license everytime once the license is fetched for the first time :3 #16.5.26-Raven
+                                if not LICENSE:#forgot to add a single 'not', just fixed it now #12.6.26-Raven
+                                    try:
+                                        print(LICENSE:=requests.get('https://raw.githubusercontent.com/XFydro/x3/refs/heads/main/LICENSE').text)
+                                    except Exception:
+                                        print("Couldn't Fetch License, Try checking your network connection.")
+                                else:
+                                    print(LICENSE)
+                            elif user_input.lower() == "open":
+                                if os.path.exists(temp_file):
+                                    if platform.system() == "Darwin": #ofc darwin support once again #18.5.26-Raven
+                                        subprocess.Popen(["open", temp_file])
+                                    elif os.name == "nt":
+                                        subprocess.Popen(["start", temp_file], shell=True)
+                                    elif platform.system() == "Linux":
+                                        subprocess.Popen(["xdg-open", temp_file])
+                                else:
+                                    print("No code to open. Start typing to create the file.")
+                            elif user_input.lower()=="file":
+                                with open(temp_file, "r") as f:
+                                    print("->Start")
+                                    print(f.read())
+                                    print("<-End")
                             else:
-                                print(LICENSE)
-                        else:
-                            with open(temp_file, "a", encoding="utf-8") as f:
-                                f.write(user_input + "\n")
+                                with open(temp_file, "a", encoding="utf-8") as f:
+                                    f.write(user_input + "\n")
 
-                    except (KeyboardInterrupt, EOFError):
-                        print("\nExiting.")
-                        interpreter.control_stack.clear()
-                        break
+                        except (KeyboardInterrupt, EOFError):
+                            print("")
+                            continue
+                else:
+                    while 1:
+                        while not (x:=input()).strip().startswith("run"):
+                            interpreter.handle_command(x)
+                        else:
+                            file=x.split()[1]
+                            with open(file, 'r', encoding="UTF-8", errors='replace') as script_file:
+                                interpreter.script_lines = script_file.readlines()  # Store all lines in memory
+                                interpreter.current_line = 0
+
+                                while interpreter.current_line < len(interpreter.script_lines):
+                                    line = interpreter.script_lines[interpreter.current_line].strip()
+                                    interpreter.handle_command(line)
+                                    interpreter.current_line += 1  # Move to the next line unless `goto` changes it (i hope this doesnt breaks anything)
+                                
             if interpreter.control_stack:
                 print("--ErrID102: Program ended with unclosed blocks:")
                 for block in interpreter.control_stack:
@@ -1988,3 +2023,4 @@ except (KeyboardInterrupt, EOFError):
 except Exception as e:
     print(f"--ErrID16: {e},\nTerminating script.")
 #Restarting Development - January/26 
+#Total(?) overhaul - May-July/26
