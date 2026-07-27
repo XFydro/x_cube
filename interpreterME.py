@@ -4,10 +4,11 @@
 Requirements:
 __Python3.8+
 __Pip(Latest Update for better experience)
-__Internet Connection(for first run to download essentials like license, )
+__Internet Connection(for first run to download essentials like license)
 __Minimal Hardware resources:2GB Ram
 __Patience because python is slow af :P
 """
+
 from difflib import SequenceMatcher
 import datetime, platform, uuid, getpass, socket, traceback, builtins, argparse, time, re, os, shlex, json, difflib, subprocess, importlib, random, math, struct
 #import gc
@@ -15,7 +16,7 @@ import ast
 import operator
 #import cProfile
 REPL=0 #on default script mode.
-VERSION=3.97 #version (For IDE and more)
+VERSION=3.975 #version (For IDE and more)
 
 def install_package(package, alias=None)->None:
     import sys
@@ -153,7 +154,6 @@ try:
                 "##interpreter:funcs": lambda: list(getattr(self, "functions", {}).keys()),
                 "##interpreter:memory": lambda: f"{round(psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024, 2)} MB" if 'psutil' in globals() else "[psutil module not available]",
                 "##interpreter:platform": lambda: platform.platform(),
-                "##interpreter:eval": lambda x="": eval(x) if x else None,
                 "##interpreter:cl":lambda:self.current_line,
                 "##random": lambda: random.random(),
                 "##randint": lambda: random.randint(0, 100),
@@ -164,7 +164,7 @@ try:
                 "##datetime": lambda: datetime.datetime.now(),
                 "##datetime:iso": lambda: datetime.datetime.now().isoformat(),
                 "##datetime:utc": lambda: datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                
+
                 "##REPL": lambda: self.REPL, 
                 "##uuid": lambda: str(uuid.uuid4()),
                 "##uuid:hex": lambda: uuid.uuid4().hex,
@@ -217,7 +217,6 @@ try:
                     ) if len(hex_str) >= 6 else (0, 0, 0)
                 )(s.strip('"').lstrip("#") + "000000"),
 
-                #"##readfile": lambda path="": open(path, "r").read() if os.path.exists(path) else "[File not found]",#returns entire file content as an single string, removed #26.06.26
             }
         def raiseError(self, message):
             raise Error(message)
@@ -1888,7 +1887,9 @@ try:
             interpreter = Interpreter()
             interpreter.debug=True if args.debug else False
             interpreter.dev("all") if args.debug else ...
-            
+    
+
+
             if args.file:
                 try:
                     with open(args.file, 'r', encoding="UTF-8", errors='replace') as script_file:
@@ -1928,30 +1929,15 @@ try:
                             user_input = input(">>").strip()
                             if user_input.lower() == "run":
                                 if os.path.exists(temp_file) and os.path.getsize(temp_file) > 0:
-                                    script = f'python3 "{os.path.abspath(__file__)}" "{temp_file}"'
-                                    if os.name == "nt":
-                                        subprocess.Popen(
-                                            f'start cmd /k python "{os.path.abspath(__file__)}" "-f" "{temp_file}"',
-                                            shell=True
-                                        )
-                                    elif platform.system() == "Linux":
-                                        terminals = [
-                                            ["x-terminal-emulator", "-e", script],
-                                            ["gnome-terminal", "--", "bash", "-c", f'{script}; exec bash'],
-                                            ["konsole", "-e", script],
-                                            ["xterm", "-e", script]
-                                        ]
-                                        for term in terminals:
-                                            try:
-                                                subprocess.Popen(term)
-                                                break
-                                            except:
-                                                continue
-                                    elif platform.system() == "Darwin": #my friend told me to do this, i dont even know what darwin is TwT #3.5.26-Raven.
-                                        subprocess.Popen([
-                                            "osascript", "-e",
-                                            f'tell application "Terminal" to do script "{script}"'
-                                        ])
+                                    with open(temp_file, 'r', encoding="UTF-8", errors='replace') as script_file:
+                                        interpreter.script_lines = script_file.readlines()  # Store all lines in memory
+                                        interpreter.current_line = 0
+
+                                        while interpreter.current_line < len(interpreter.script_lines):
+                                            line = interpreter.script_lines[interpreter.current_line].strip()
+                                            interpreter.handle_command(line)
+                                            interpreter.current_line += 1  # Move to the next line unless `goto` changes it (i hope this doesnt breaks anything)
+
                                 elif os.path.getsize(temp_file)==0:
                                     print("Empty File.")
                             elif user_input.lower() == "clear":
